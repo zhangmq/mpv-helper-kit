@@ -3,27 +3,28 @@
 url=""
 for arg in "$@"; do url="$arg"; done
 
-# Cookie 缓存
 cookie_file="${XDG_CACHE_HOME:-$HOME/.cache}/yt-dlp/cookies.txt"
 cookie_ttl=$((6 * 3600))
 
-refresh_cookies() {
+# Cookie 过期时刷新
+if [ ! -f "$cookie_file" ] || [ $(( $(date +%s) - $(stat -c %Y "$cookie_file") )) -ge "$cookie_ttl" ]; then
     mkdir -p "$(dirname "$cookie_file")"
-    yt-dlp --cookies-from-browser chrome --cookies "$cookie_file" --skip-download "about:blank" 2>/dev/null
-}
+    yt-dlp --cookies-from-browser chrome --cookies "$cookie_file" --skip-download "https://www.youtube.com" 2>/dev/null
+fi
 
-[ ! -f "$cookie_file" ] || [ $(( $(date +%s) - $(stat -c %Y "$cookie_file") )) -ge "$cookie_ttl" ] && refresh_cookies
-
-# 单视频快速通道（不含播放列表参数）
+# 单视频快速通道（YouTube Mix 等含 RD 列表的 watch 页面也在此列）
 case "$url" in
+    *list=RD*|*youtube.com/watch?*|*youtu.be/*|*bilibili.com/video/*|*nicovideo.jp/watch/*|*vimeo.com/*[0-9]*|*twitch.tv/videos/*)
+        exec mpv --force-window=yes "$url"
+        ;;
     *list=*|*bilibili.com/list/*|*bilibili.com/space/*|*nicovideo.jp/mylist/*|*nicovideo.jp/series/*|*nicovideo.jp/user/*)
-        ;;  # 播放列表 → 走 yt-dlp 检测
-    *youtube.com/watch?*|*youtu.be/*|*bilibili.com/video/*|*nicovideo.jp/watch/*|*vimeo.com/*[0-9]*|*twitch.tv/videos/*)
+        ;;
+    *)
         exec mpv --force-window=yes "$url"
         ;;
 esac
 
-# 其余 URL（含播放列表）用 yt-dlp 自动检测
+# 播放列表
 urls=$(yt-dlp --cookies "$cookie_file" --flat-playlist --print url "$url" 2>/dev/null)
 count=$(echo "$urls" | grep -c '^https\?://')
 
