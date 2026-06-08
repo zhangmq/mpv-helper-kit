@@ -62,14 +62,14 @@ local saved_state = nil
 -- 视频切换：观察 shader 列表变化，检测到 profile 覆盖后恢复
 local restoring = false
 mp.observe_property("glsl-shaders", "native", function()
-    if restoring then return end  -- 防止递归
+    if restoring then return end
     if not saved_state then
-        -- 首次记录（等 profile 设完后再抓）
-        mp.add_timeout(0.1, function()
-            saved_state = save_state()
-            sync_indexes(saved_state.shaders, saved_state.opts)
-            log("info", "init: " .. #saved_state.shaders .. " shaders, opts=" .. saved_state.opts)
-        end)
+        -- 等待视频元数据就绪再捕获初始状态
+        -- height 非 nil → profile-cond 已评估完毕 → auto-profile 已生效
+        if mp.get_property_native("height", nil) == nil then return end
+        saved_state = save_state()
+        sync_indexes(saved_state.shaders, saved_state.opts)
+        log("info", "init: " .. #saved_state.shaders .. " shaders, opts=" .. saved_state.opts)
         return
     end
     -- 检查当前是否与保存的状态一致
@@ -93,8 +93,9 @@ mp.observe_property("glsl-shaders", "native", function()
     sync_indexes(current, current_opts)
 end)
 
--- 构建 OSD 标签
+-- 构建 OSD 标签，空字符串返回 nil（mpv 内部可能产生空条目）
 local function shader_label(s, opts)
+    if s == "" then return nil end
     local base = s:match("([^/]+)%.glsl$") or s
     if base:find("FSRCNNX") then return "FSRCNNX"
     elseif base:find("Anime4K_Restore_CNN") then
@@ -106,13 +107,27 @@ local function shader_label(s, opts)
     end
 end
 
--- Ctrl+Alt+i：显示 mpv 真实状态
+-- Ctrl+Alt+i：按固定顺序显示（渲染管线：LUMA → SCALED）
 mp.add_key_binding("Ctrl+Alt+i", "shader-status", function()
     local list = mp.get_property_native("glsl-shaders", {})
     local opts = mp.get_property("glsl-shader-opts", "")
-    local parts = {}
+    local present = {}
     for _, s in ipairs(list) do
-        table.insert(parts, shader_label(s, opts))
+        if s ~= "" then present[s] = true end
+    end
+    -- 固定顺序：FSRCNNX → Anime4K → CAS
+    local parts = {}
+    if present[fsrcnnx_path] then
+        table.insert(parts, shader_label(fsrcnnx_path, opts))
+    end
+    for _, a in ipairs(anime4k) do
+        if present[a.path] then
+            table.insert(parts, shader_label(a.path, opts))
+            break
+        end
+    end
+    if present[cas_path] then
+        table.insert(parts, shader_label(cas_path, opts))
     end
     local msg = #parts > 0 and table.concat(parts, " + ") or "着色器: 无"
     log("info", msg)
