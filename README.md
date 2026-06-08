@@ -5,7 +5,7 @@
 - 浏览器联动
     - 浏览器扩展到 mpv 的 URL 投送（依赖 ff2mpv 扩展、ff2mpv-rust）
     - 播放列表支持（依赖 yt-dlp）
-    - 支持 YouTube、Bilibili、Niconico 等网站
+    - 支持 YouTube、Bilibili、Niconico、Twitch、Vimeo 等 yt-dlp 支持的网站），目前仅测试了 YouTube、Bilibili、Niconico
 - 着色器动态切换（依赖 mpv-shim-default-shaders）
     - FSRCNNX（超分辨率）：开关
     - Anime4K（去模糊）：L / M / S 循环
@@ -110,30 +110,60 @@ chmod +x ~/.local/bin/mpv-wrapper.py
 
 #### 数据流
 
-浏览器扩展将当前页面 URL 通过 Chrome Native Messaging 或 Firefox native messaging 发送给 `ff2mpv-rust`，后者根据 `~/.config/ff2mpv-rust.json` 中的 `player_command` 调用 `mpv-wrapper.py`，wrapper 处理 URL 后启动 mpv。
+浏览器扩展将当前页面 URL 通过 Chrome Native Messaging 发送给 `ff2mpv-rust`，后者根据 `~/.config/ff2mpv-rust.json` 中的 `player_command` 调用 `mpv-wrapper.py`，wrapper 导出 cookie 后启动 mpv。mpv 通过内建 yt-dlp hook（`ytdl=yes`）解析实际流地址并播放。
 
-mpv 收到 URL 后通过内建 yt-dlp hook（`ytdl=yes`）解析实际流地址并播放。
+#### mpv-wrapper.py 工作流程
 
-#### mpv-wrapper.py
+1. **通知**：弹出桌面通知「收到链接，请等待播放器启动」
+2. **Cookie 导出**：删除 `~/.cache/yt-dlp/cookies.txt` 旧文件，从 Chrome 重新导出（防止旧 cookie 残留污染），显示「正在导出 Cookie」→「Cookie 已就绪」
+3. **路由**：
+   - 默认模式：调用 `yt-dlp --flat-playlist --print url` 提取所有视频地址
+     - 结果 > 1 条 → 管道传入 `mpv --playlist=-`，显示「播放列表就绪」
+     - 结果 = 1 条 → 直接播放，显示「正在启动播放器」
+     - 结果 = 0 条 → 回退直接播放（yt-dlp 可能因网络问题失败）
+   - `--no-playlist` 模式：跳过提取，URL 直接传给 mpv
+4. **监控**：读取 mpv stdout，逐行记录到 `~/.cache/yt-dlp/wrapper.log`
+   - `[ytdl_hook] ERROR` → 通知「解析错误」+ 错误内容
+   - `AV:` 状态行 → 视频开始播放，关闭通知
+   - 单视频：第一个 ERROR 即终止 mpv
+   - 播放列表：连续 3 个 ERROR 终止 mpv（中间有成功播放则重置计数）
+   - Cookie 失效警告 → 通知一次，不中断
 
-wrapper 从参数中获取 URL，每次调用时从 Chrome 重新导出 cookie 到 `~/.cache/yt-dlp/cookies.txt`（不做缓存），然后启动 mpv。
+日志文件：`~/.cache/yt-dlp/wrapper.log`
 
-**命令行参数**：
+#### 命令行参数
 
 | 参数 | 说明 |
 |---|---|
-| （默认） | 对 URL 执行 `yt-dlp --flat-playlist --print url` 提取所有视频地址。若结果 > 1 条则管道传入 `mpv --playlist=-`，否则直接播放 |
-| `--no-playlist` | 跳过播放列表提取，直接将 URL 传给 mpv。适合仅需单视频播放、不想等待 yt-dlp 解析的场景 |
+| （默认） | 播放列表模式，对所有 URL 先调用 yt-dlp 提取 |
+| `--no-playlist` | 单视频模式，URL 直传 mpv，跳过 yt-dlp 解析 |
 
-**Cookie**：每次调用从 Chrome 重新导出到 `~/.cache/yt-dlp/cookies.txt`，mpv 通过 `--ytdl-raw-options cookies=...` 使用该文件。
+在 `~/.config/ff2mpv-rust.json` 的 `player_args` 中配置：
 
-> **注意**：cookie 来源于 Chrome 当前的会话状态。如果 Chrome 已长时间未访问目标网站，Chrome 中的会话可能已过期，需在 Chrome 中先打开一次该网站并确认已登录。
+```json
+{
+    "player_command": "/home/<用户名>/.local/bin/mpv-wrapper.py",
+    "player_args": ["--"]
+}
+```
 
-**mpv.conf 配合**：`ytdl-raw-options` 中的 `cookies=` 指向同一 cookie 文件作为默认值。`no-playlist=` 阻止 mpv 内建 hook 再次展开已被 wrapper 处理的播放列表。
+添加 `--no-playlist` 可切换为单视频模式：
+
+```json
+{
+    "player_command": "/home/<用户名>/.local/bin/mpv-wrapper.py",
+    "player_args": ["--", "--no-playlist"]
+}
+```
+
+#### Cookie
+
+每次调用删除旧文件后从 Chrome 重新导出，导出超时 30 秒（密钥环未解锁时回退使用已有文件）。mpv 通过 `--ytdl-raw-options cookies=...` 使用该文件，`no-playlist=` 阻止 mpv 内建 hook 再次展开已被 wrapper 处理的播放列表。
 
 #### 已知限制
 
-- Chrome 长时间未访问 YouTube 时，导出的 cookie 可能已过期。收到通知后需在 Chrome 中访问一次 YouTube 再重试
+- 桌面通知依赖 `notify-send`。大多数桌面环境已预装 `libnotify`，如缺失则手动安装：`sudo pacman -S libnotify`
+- Chrome 长时间未访问目标网站时，Chrome 中的会话本身可能过期，需先打开一次该网站确认已登录
 - Celluloid / Haruna 等 GUI 前端无法通过 ff2mpv 播放流媒体 URL
 - 部分网站可能因地域限制导致 yt-dlp 提取失败
 
@@ -193,7 +223,7 @@ UL 和 VL 变体存在渲染问题，已排除。
 - `Ctrl+Alt+a` 按下时：Anime4K 关闭 → L → M → S → 关闭（循环）
 - `Ctrl+Alt+c` 按下时：CAS 关闭 → 0.0 → 0.5 → 1.0 → 关闭（循环）
 - FSRCNNX、Anime4K、CAS 可同时启用
-- 切换视频后，脚本通过 `file-loaded` 事件将 `glsl-shaders` 和 `glsl-shader-opts` 恢复为上一个视频结束时的值
+- 脚本通过 `mp.observe_property("glsl-shaders", ...)` 监听着色器变化。首次触发时等待视频元数据就绪、`profile-cond` 已评估，再捕获 profile 设置的初始着色器作为基准。之后每次变化比较当前值与基准，不一致说明被 profile 覆盖，恢复用户手动设置。用户按键操作后更新基准值。
 
 #### 自动配置（可选）
 
