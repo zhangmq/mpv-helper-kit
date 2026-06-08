@@ -78,16 +78,25 @@ ln -sf ~/.config/mpv/scripts/shader-keys.lua ~/.config/celluloid/scripts/shader-
 # ff2mpv-rust: 接收浏览器扩展发来的 URL
 sudo pacman -S yt-dlp
 paru -S ff2mpv-rust
-cp files/.local/bin/mpv-wrapper.sh ~/.local/bin/mpv-wrapper.sh
-chmod +x ~/.local/bin/mpv-wrapper.sh
+cp files/.local/bin/mpv-wrapper.py ~/.local/bin/mpv-wrapper.py
+chmod +x ~/.local/bin/mpv-wrapper.py
 ```
 
-创建 `~/.config/ff2mpv-rust.json`，`player_command` 需使用绝对路径：
+创建 `~/.config/ff2mpv-rust.json`，`player_command` 需使用绝对路径，`--no-playlist` 可选：
 
 ```json
 {
-    "player_command": "/home/<用户名>/.local/bin/mpv-wrapper.sh",
+    "player_command": "/home/<用户名>/.local/bin/mpv-wrapper.py",
     "player_args": ["--"]
+}
+```
+
+若不需要播放列表解析（更快），添加 `--no-playlist`：
+
+```json
+{
+    "player_command": "/home/<用户名>/.local/bin/mpv-wrapper.py",
+    "player_args": ["--", "--no-playlist"]
 }
 ```
 
@@ -101,35 +110,26 @@ chmod +x ~/.local/bin/mpv-wrapper.sh
 
 #### 数据流
 
-浏览器扩展将当前页面 URL 通过 Chrome Native Messaging 或 Firefox native messaging 发送给 `ff2mpv-rust`，后者根据 `~/.config/ff2mpv-rust.json` 中的 `player_command` 调用 `mpv-wrapper.sh`，wrapper 处理 URL 后启动 mpv。
+浏览器扩展将当前页面 URL 通过 Chrome Native Messaging 或 Firefox native messaging 发送给 `ff2mpv-rust`，后者根据 `~/.config/ff2mpv-rust.json` 中的 `player_command` 调用 `mpv-wrapper.py`，wrapper 处理 URL 后启动 mpv。
 
 mpv 收到 URL 后通过内建 yt-dlp hook（`ytdl=yes`）解析实际流地址并播放。
 
-#### mpv-wrapper.sh
+#### mpv-wrapper.py
 
-wrapper 从传入参数中取最后一个值作为 URL，按以下分类处理：
+wrapper 从参数中获取 URL，每次调用时从 Chrome 重新导出 cookie 到 `~/.cache/yt-dlp/cookies.txt`（不做缓存），然后启动 mpv。
 
-**已知单视频格式**：以下格式的 URL 直接 `exec mpv`，不调用 yt-dlp：
+**命令行参数**：
 
-- `youtube.com/watch`、`youtu.be/`
-- `bilibili.com/video/`
-- `nicovideo.jp/watch/`
-- `vimeo.com/`
-- `twitch.tv/videos/`
+| 参数 | 说明 |
+|---|---|
+| （默认） | 对 URL 执行 `yt-dlp --flat-playlist --print url` 提取所有视频地址。若结果 > 1 条则管道传入 `mpv --playlist=-`，否则直接播放 |
+| `--no-playlist` | 跳过播放列表提取，直接将 URL 传给 mpv。适合仅需单视频播放、不想等待 yt-dlp 解析的场景 |
 
-**已知播放列表格式**：以下格式的 URL 通过 `yt-dlp --flat-playlist --print url` 提取所有条目，管道传入 `mpv --playlist=-`：
+**Cookie**：每次调用从 Chrome 重新导出到 `~/.cache/yt-dlp/cookies.txt`，mpv 通过 `--ytdl-raw-options cookies=...` 使用该文件。
 
-- YouTube `?list=`
-- Bilibili `/list/`、`/space/`
-- Niconico `/mylist/`、`/series/`、`/user/`
+> **注意**：cookie 来源于 Chrome 当前的会话状态。如果 Chrome 已长时间未访问目标网站，Chrome 中的会话可能已过期，需在 Chrome 中先打开一次该网站并确认已登录。
 
-**其他 URL**：由 yt-dlp `--flat-playlist` 检测。若返回多于 1 条 URL，按播放列表处理；否则按单视频处理。
-
-**Cookie**：wrapper 每次被调用时从 Chrome 重新导出 cookie 到 `~/.cache/yt-dlp/cookies.txt`，不做缓存。导出后立即用 YouTube 视频验证，验证通过则 mpv 使用 cookie 文件（快速路径），验证失败则回退到 `--cookies-from-browser` 直接读取并弹通知提醒。
-
-> **注意**：cookie 来源于 Chrome 当前的会话状态。如果 Chrome 已长时间未访问 YouTube，Chrome 中的会话可能已过期。若收到「Chrome 登录态已过期」通知，请在 Chrome 中先打开一次 YouTube，确认页面显示已登录状态后，再使用浏览器扩展投送链接。
-
-**mpv.conf 配合**：`ytdl-raw-options` 中的 `cookies=` 指向 cookie 文件作为默认值。wrapper 启动 mpv 时通过 `--ytdl-raw-options` 命令行参数覆盖此设置（cookie 文件有效时用文件，无效时回退到 `cookies-from-browser=chrome`）。`no-playlist=` 阻止 mpv 内建 hook 再次展开已被 wrapper 处理的播放列表。
+**mpv.conf 配合**：`ytdl-raw-options` 中的 `cookies=` 指向同一 cookie 文件作为默认值。`no-playlist=` 阻止 mpv 内建 hook 再次展开已被 wrapper 处理的播放列表。
 
 #### 已知限制
 
@@ -222,7 +222,7 @@ mpv-helper-kit/
     │   │       └── shader-keys.lua
     └── .local/
         └── bin/
-            └── mpv-wrapper.sh         # URL 预处理 + cookie 导出
+            └── mpv-wrapper.py         # URL 预处理 + cookie 导出
 ```
 
 ---
@@ -247,6 +247,6 @@ sudo pacman -Rns celluloid                  # GUI 前端（可选）
 | `~/.config/mpv/input.conf` | 快捷键注释 |
 | `~/.config/mpv/scripts/shader-keys.lua` | 着色器快捷键脚本 |
 | `~/.config/ff2mpv-rust.json` | ff2mpv 配置（install.sh 生成） |
-| `~/.local/bin/mpv-wrapper.sh` | URL 预处理脚本 |
+| `~/.local/bin/mpv-wrapper.py` | URL 预处理脚本 |
 | `~/.cache/yt-dlp/cookies.txt` | Chrome cookie 导出 |
 | `~/.config/celluloid/scripts/shader-keys.lua` | Celluloid 符号链接 |

@@ -82,7 +82,7 @@ deploy() {
 deploy ".config/mpv/mpv.conf"
 deploy ".config/mpv/input.conf"
 deploy ".config/mpv/scripts/shader-keys.lua"
-deploy ".local/bin/mpv-wrapper.sh" "+x"
+deploy ".local/bin/mpv-wrapper.py" "+x"
 
 # 生成 ff2mpv-rust.json（路径依赖 home 目录，不纳入 files）
 FF2MPV_JSON="$HOME_DIR/.config/ff2mpv-rust.json"
@@ -92,7 +92,7 @@ if [ -e "$FF2MPV_JSON" ]; then
 else
     cat > "$FF2MPV_JSON" << EOF
 {
-    "player_command": "$HOME_DIR/.local/bin/mpv-wrapper.sh",
+    "player_command": "$HOME_DIR/.local/bin/mpv-wrapper.py",
     "player_args": ["--"]
 }
 EOF
